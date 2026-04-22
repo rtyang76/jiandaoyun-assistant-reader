@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project specific - WorkBuddy private files
+SKILL.md
+references/ui_structure.md
+
+# Output directories
+过程文件/
+截图/
+报告/
+
+# Config files with sensitive data
+config.json
+.env
+
+# Logs
+*.log
+
+# Test outputs
+test_output/
+temp/
