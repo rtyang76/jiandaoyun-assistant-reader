@@ -30,7 +30,7 @@ from datetime import datetime
 # ============================================================
 # 全局配置（运行时由 Phase A 动态设置）
 # ============================================================
-APP_ID = ""
+APP_ID = "672f1dc45d82b890f5231d52"
 OUTPUT_DIR = "/Users/yrt/Developer/Work/erp-data-analysis/智能助手采集数据"
 FORM_ID = ""          # 当前处理的表单ID（动态变化）
 FORM_NAME = ""        # 当前表单名称（动态变化）
@@ -101,7 +101,7 @@ MODULE_DIRS = {}
 ENABLE_SCREENSHOTS = False
 
 # v8.0.9: 表单名称排除关键字（包含这些关键字的表单将被跳过）
-SKIP_FORM_KEYWORDS = ['未启用', '废弃', '测试', '草稿', '停用']
+SKIP_FORM_KEYWORDS = ['未启用', '废弃', '草稿', '停用']
 
 # v8.1.0: 字段映射空值输出开关（默认不输出未配置的空值字段）
 INCLUDE_EMPTY_FIELD_MAPPINGS = False
