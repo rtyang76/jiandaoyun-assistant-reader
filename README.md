@@ -2,156 +2,116 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> ⚠️ **本项目是一个 RPA (Robotic Process Automation) 工具**，通过浏览器自动化技术采集简道云「智能助手」配置信息。
-> 
-> **注意**：简道云官方 Open API 目前不提供智能助手（自动化工作流）的配置查询接口，因此本项目采用 RPA 方式，模拟人工操作浏览器来获取这些数据。
-
-## 项目背景
-
-简道云官方 API 支持应用、表单、数据、流程、通讯录等接口，但**不支持智能助手（自动化工作流）配置的导出**。对于需要：
-
-- 批量备份智能助手配置
-- 生成工作流文档供审计/交接
-- 分析表单间的自动化依赖关系
-
-这些场景下，官方 API 无法满足需求。本项目通过 Playwright 浏览器自动化技术，实现了智能助手配置的批量采集。
+> **本项目是一个 RPA 工具**，通过浏览器自动化技术采集简道云「智能助手」配置信息。
+>
+> 简道云官方 Open API 不提供智能助手（自动化工作流）的配置查询接口，因此本项目采用 RPA 方式，模拟人工操作浏览器来获取这些数据。
 
 ## 功能特性
 
+- **GUI 界面**：提供 tkinter 图形界面，右键即可运行，无需命令行
+- **多浏览器支持**：自动检测 Edge / Chrome / Chromium，无需安装专用浏览器
+- **跨平台**：支持 Windows / macOS / Linux
 - **RPA 自动化**：通过 CDP 协议控制浏览器，自动导航、点击、提取配置
 - **完整采集**：采集画布节点流程、字段映射关系、查询条件、分支规则等
-- **数据清洗**：智能去除 UI 噪音（按钮文本、提示信息等），提取有效业务数据
+- **数据清洗**：智能去除 UI 噪音，提取有效业务数据
 - **业务分类**：自动识别助手类型（状态更新型、数据同步型、级联删除型等）
 - **结构化输出**：生成 JSON 原始数据 + Markdown 报告
-- **智能截图**：按需截图（只保留关键节点配置），减少 80% 冗余图片
 
-## 环境准备
+## 快速开始
 
-### 1. 启动 Chromium（CDP 模式）
-
-```bash
-# 使用 launch_browser.py 脚本启动
-python3 scripts/launch_browser.py
-
-# 或手动启动
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-  --remote-debugging-port=9222 \
-  --user-data-dir=/tmp/chrome-debug-profile
-```
-
-### 2. 登录简道云
-
-在启动的浏览器中登录简道云并进入目标应用。
-
-## 使用方法
-
-### CLI 命令
+### 1. 安装依赖
 
 ```bash
-cd scripts
-
-# 交互式选择模块
-python3 capture_all_assistants.py
-
-# 指定单个模块
-python3 capture_all_assistants.py 销售管理
-
-# 指定多个模块（逗号分隔）
-python3 capture_all_assistants.py 销售管理,生产管理,采购管理
-
-# 只列出所有模块和表单
-python3 capture_all_assistants.py --list-modules
+pip install playwright
 ```
 
-### 配置项
+> 不需要运行 `playwright install chromium`，本工具直接使用系统已安装的 Edge 或 Chrome。
 
-编辑 `capture_all_assistants.py` 修改以下全局配置：
+### 2. 配置
 
-```python
-# 输出根目录
-OUTPUT_DIR = "/Users/yrt/Developer/Work/erp-data-analysis/智能助手采集数据"
+复制配置模板并填入你的应用 ID：
 
-# 默认应用ID
-APP_ID = "69db868cc68a628a7d0f207f"
-
-# 截图开关（默认关闭以提升速度）
-ENABLE_SCREENSHOTS = False
-
-# 字段映射空值输出开关（默认不输出未配置的空值字段）
-INCLUDE_EMPTY_FIELD_MAPPINGS = False
-
-# 表单名称排除关键字
-SKIP_FORM_KEYWORDS = ['未启用', '废弃', '测试', '草稿', '停用']
+```bash
+cp scripts/config.example.json scripts/config.json
 ```
+
+编辑 `scripts/config.json`：
+
+```json
+{
+    "app_id": "你的简道云应用ID",
+    "output_dir": "",
+    "cdp_url": "http://localhost:9222",
+    "enable_screenshots": false,
+    "include_empty_field_mappings": false,
+    "skip_form_keywords": ["未启用", "废弃", "草稿", "停用"]
+}
+```
+
+> `config.json` 已在 `.gitignore` 中，不会被提交到仓库。
+
+### 3. 运行
+
+**GUI 方式（推荐）：**
+
+```bash
+python scripts/gui_capture.py
+```
+
+点击「启动浏览器」→ 登录简道云 → 点击「连接浏览器 & 获取模块」→ 勾选模块 → 点击「开始采集」
+
+**CLI 方式：**
+
+```bash
+# 先启动浏览器（自动检测 Edge/Chrome）
+python scripts/launch_browser.py
+
+# 在浏览器中登录简道云，然后运行采集
+python scripts/capture_all_assistants.py                  # 交互式选择模块
+python scripts/capture_all_assistants.py 销售管理          # 指定模块
+python scripts/capture_all_assistants.py 销售管理,采购管理  # 多模块
+python scripts/capture_all_assistants.py --list-modules    # 只列出模块
+```
+
+## 配置说明
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `app_id` | 简道云应用 ID | - |
+| `output_dir` | 输出目录（空则为 `./output`） | `""` |
+| `cdp_url` | 浏览器 CDP 调试地址 | `http://localhost:9222` |
+| `enable_screenshots` | 是否截图（关闭可提速） | `false` |
+| `include_empty_field_mappings` | 是否输出空值字段映射 | `false` |
+| `skip_form_keywords` | 跳过包含这些关键字的表单 | `["未启用", "废弃", "草稿", "停用"]` |
+
+**优先级**：CLI 参数 > `config.json` > 默认值
 
 ## 输出结构
 
 ```
 {输出目录}/
 └── {模块名}_{时间戳}/
-    ├── 过程文件/              # JSON原始数据
+    ├── 过程文件/              # JSON 原始数据
     │   ├── a00_{时间}_result.json       # 单个助手数据
     │   ├── {表单名}_summary.json        # 表单汇总
-    │   ├── {模块名}_summary.json        # 模块汇总
-    │   └── GLOBAL_SUMMARY_{时间}.json   # 全局汇总
+    │   └── {模块名}_summary.json        # 模块汇总
     ├── 截图/                  # 截图文件（如开启）
-    │   └── ...
-    └── 报告/                  # Markdown报告
-        ├── {表单名}_report.md             # 表单详情报告
-        ├── {模块名}_summary.md            # 模块汇总报告
-        └── GLOBAL_SUMMARY_{时间}.md       # 全局汇总报告
+    └── 报告/                  # Markdown 报告
+        ├── {表单名}_report.md
+        ├── {模块名}_summary.md
+        └── GLOBAL_SUMMARY_{时间}.md
 ```
 
-## 报告内容示例
+## 文件说明
 
-### Markdown 报告结构
-
-```markdown
-# 表单名称
-
-表单ID: xxx | 模块: xxx | 助手数: n
-
-## 1. 助手名称
-**流程**:
-1. [触发] 节点名称
-   - 目标表单: xxx
-   - 查询条件: ...
-   - 字段映射:
-     - 字段A = 节点1 → 字段X
-     - 字段B = `自定义值`
-```
-
-### JSON 数据结构
-
-```json
-{
-  "index": 0,
-  "name": "助手名称",
-  "triggerEvent": "修改数据",
-  "businessType": "数据同步型",
-  "businessDescription": "跨表单数据级联更新",
-  "nodes": [
-    {
-      "index": 0,
-      "name": "触发节点",
-      "type": "触发",
-      "config": {
-        "header": "表单触发",
-        "fields": [...],
-        "fieldMappings": [
-          {
-            "field": "目标字段",
-            "sourceType": "node|custom|empty",
-            "sourceNode": "源节点",
-            "sourceField": "源字段",
-            "customValue": "自定义值"
-          }
-        ]
-      }
-    }
-  ]
-}
-```
+| 文件 | 说明 |
+|------|------|
+| `gui_capture.py` | GUI 界面（推荐使用） |
+| `capture_all_assistants.py` | 核心采集脚本 |
+| `launch_browser.py` | 浏览器启动工具（自动检测 Edge/Chrome） |
+| `test_field_mapping.py` | 字段映射解析单元测试 |
+| `config.json` | 配置文件（不提交 Git） |
+| `config.example.json` | 配置模板（提交 Git） |
 
 ## 节点类型识别
 
@@ -167,11 +127,8 @@ SKIP_FORM_KEYWORDS = ['未启用', '废弃', '测试', '草稿', '停用']
 | calculate-node-icon | 计算 |
 | ai-node-icon | AI |
 | message-node-icon | 消息 |
-| webhook-node-icon | Webhook |
 
 ## 业务类型自动分类
-
-根据节点组合自动标记助手类型：
 
 | 类型 | 特征 | 节点类型 |
 |------|------|----------|
@@ -182,71 +139,20 @@ SKIP_FORM_KEYWORDS = ['未启用', '废弃', '测试', '草稿', '停用']
 | MRP运算型 | 物料需求计划计算 | 计算+查询+新增 |
 | 消息通知型 | 发送企业微信/邮件 | 消息 |
 
-## 注意事项
-
-1. **浏览器要求**：必须使用 CDP 模式启动 Chromium，确保 `--remote-debugging-port=9222`
-2. **登录状态**：运行前需已在浏览器中登录简道云
-3. **页面跳转**：采集过程中不要手动操作浏览器，避免干扰自动化流程
-4. **超时处理**：若某助手采集失败，脚本会自动跳过并继续处理下一个
-5. **资源占用**：截图功能会生成大量图片文件，建议在 SSD 上运行
-
 ## 故障排查
 
-### 无法连接浏览器
-
-```
-❌ 无法找到右侧「所有本表相关」下拉框
-```
-
-**解决**：确保 Chromium 已正确启动并开启了远程调试端口
-
-### 列表为空
-
-```
-⚠️ 该表单无智能助手（作为触发动作）
-```
-
-**说明**：该表单可能没有配置以它为触发源的助手，或筛选未正确执行
-
-### 节点采集超时
-
-```
-⚠️ 配置抽屉加载超时
-```
-
-**处理**：脚本会使用备用延时继续执行，部分节点的详细配置可能缺失
-
-## 版本历史
-
-### v8.1.0
-- 新增 `INCLUDE_EMPTY_FIELD_MAPPINGS` 配置，控制是否输出空值字段
-- 重构输出目录结构：过程文件/截图/报告 三分离
-- 修复字段映射空值过滤逻辑
-
-### v8.0
-- 智能清洗节点名称与配置文本
-- 自动业务类型分类
-- 智能截图策略（减少80%冗余）
-- 规范化目录结构
-
-### v7.x
-- 支持二级文件夹展开
-- 颜色过滤（跳过仪表盘/文件夹）
-- CLI交互式模块选择
-- 结构化字段映射解析
-
-## 文件说明
-
-| 文件 | 说明 |
-|------|------|
-| `capture_all_assistants.py` | 主采集脚本 |
-| `launch_browser.py` | 浏览器启动工具 |
-| `test_field_mapping.py` | 字段映射解析单元测试 |
+| 问题 | 解决方案 |
+|------|----------|
+| 未找到浏览器 | 确保已安装 Edge 或 Chrome |
+| 连接超时 | 检查浏览器是否以 CDP 模式启动（端口 9222） |
+| 提取 0 个模块 | 确认已在浏览器中登录并进入目标应用 |
+| 表单无助手 | 该表单可能没有以它为触发源的助手 |
+| 节点配置缺失 | 脚本会自动跳过失败节点，继续处理下一个 |
 
 ## License
 
-[MIT](LICENSE) © 2025
+[MIT](LICENSE)
 
 ---
 
-**免责声明**：本项目仅供学习交流使用，请遵守简道云服务条款。使用本工具产生的数据请妥善保管，不要泄露敏感业务信息。
+**免责声明**：本项目仅供学习交流使用，请遵守简道云服务条款。

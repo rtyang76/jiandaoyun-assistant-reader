@@ -30,12 +30,73 @@ from datetime import datetime
 # ============================================================
 # 全局配置（运行时由 GUI 或 CLI 参数设置）
 # ============================================================
-APP_ID = "672f1dc45d82b890f5231d52"
+APP_ID = ""
 OUTPUT_DIR = ""
 CDP_URL = "http://localhost:9222"
 FORM_ID = ""          # 当前处理的表单ID（动态变化）
 FORM_NAME = ""        # 当前表单名称（动态变化）
 MODULE_NAME = ""      # 当前模块名称（动态变化）
+
+# 配置文件路径（与脚本同目录）
+_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+
+
+def load_config():
+    """从 config.json 加载配置，文件不存在时使用默认值"""
+    global APP_ID, OUTPUT_DIR, CDP_URL, ENABLE_SCREENSHOTS, INCLUDE_EMPTY_FIELD_MAPPINGS, SKIP_FORM_KEYWORDS
+
+    if not os.path.exists(_CONFIG_FILE):
+        return
+
+    try:
+        with open(_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            cfg = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"⚠️ 配置文件读取失败: {e}")
+        return
+
+    if cfg.get('app_id') and cfg['app_id'] != '你的简道云应用ID':
+        APP_ID = cfg['app_id']
+    if cfg.get('output_dir'):
+        OUTPUT_DIR = cfg['output_dir']
+    if cfg.get('cdp_url'):
+        CDP_URL = cfg['cdp_url']
+    if 'enable_screenshots' in cfg:
+        ENABLE_SCREENSHOTS = cfg['enable_screenshots']
+    if 'include_empty_field_mappings' in cfg:
+        INCLUDE_EMPTY_FIELD_MAPPINGS = cfg['include_empty_field_mappings']
+    if cfg.get('skip_form_keywords'):
+        SKIP_FORM_KEYWORDS = cfg['skip_form_keywords']
+
+
+def save_config(app_id=None, output_dir=None):
+    """保存当前配置到 config.json"""
+    cfg = {}
+    if os.path.exists(_CONFIG_FILE):
+        try:
+            with open(_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if app_id is not None:
+        cfg['app_id'] = app_id
+    if output_dir is not None:
+        cfg['output_dir'] = output_dir
+    cfg.setdefault('cdp_url', CDP_URL)
+    cfg.setdefault('enable_screenshots', ENABLE_SCREENSHOTS)
+    cfg.setdefault('include_empty_field_mappings', INCLUDE_EMPTY_FIELD_MAPPINGS)
+    cfg.setdefault('skip_form_keywords', SKIP_FORM_KEYWORDS)
+
+    try:
+        with open(_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=4)
+    except OSError as e:
+        print(f"⚠️ 配置文件保存失败: {e}")
+
+
+# 模块加载时自动读取配置
+load_config()
 
 # 节点类型常量（与 NODE_TYPE_MAP 的值保持一致，集中管理避免字符串散落）
 class NodeType:

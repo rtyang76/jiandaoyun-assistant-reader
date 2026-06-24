@@ -1,0 +1,8 @@
+{
+    "app_id": "你的简道云应用ID",
+    "output_dir": "",
+    "cdp_url": "http://localhost:9222",
+    "enable_screenshots": false,
+    "include_empty_field_mappings": false,
+    "skip_form_keywords": ["未启用", "废弃", "草稿", "停用"]
+}

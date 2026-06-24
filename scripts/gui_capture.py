@@ -154,13 +154,14 @@ class CaptureGUI:
             var.set(d)
 
     def _sync_config(self):
-        """将 GUI 配置同步到 core 模块"""
+        """将 GUI 配置同步到 core 模块，并持久化到 config.json"""
         core.APP_ID = self.app_id_var.get().strip()
         out = self.output_dir_var.get().strip()
         core.OUTPUT_DIR = out or os.path.join(os.getcwd(), "output")
         core.ENABLE_SCREENSHOTS = self.screenshot_var.get()
         core.INCLUDE_EMPTY_FIELD_MAPPINGS = self.empty_fields_var.get()
         os.makedirs(core.OUTPUT_DIR, exist_ok=True)
+        core.save_config(app_id=core.APP_ID, output_dir=out)
 
     def _set_busy(self, busy=True):
         """统一切换按钮状态：busy=True 时禁用主要按钮"""
