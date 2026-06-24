@@ -28,10 +28,11 @@ import sys
 from datetime import datetime
 
 # ============================================================
-# 全局配置（运行时由 Phase A 动态设置）
+# 全局配置（运行时由 GUI 或 CLI 参数设置）
 # ============================================================
 APP_ID = "672f1dc45d82b890f5231d52"
-OUTPUT_DIR = "/Users/yrt/Developer/Work/erp-data-analysis/智能助手采集数据"
+OUTPUT_DIR = ""
+CDP_URL = "http://localhost:9222"
 FORM_ID = ""          # 当前处理的表单ID（动态变化）
 FORM_NAME = ""        # 当前表单名称（动态变化）
 MODULE_NAME = ""      # 当前模块名称（动态变化）
@@ -121,6 +122,23 @@ def _skip_keyword(form_name):
         if kw in form_name:
             return kw
     return None
+
+
+def _is_valid_form(child):
+    """判断子项是否为有效表单（排除非表单类型和含关键字的表单）"""
+    return child.get('type') not in SKIP_ICON_TYPES and not should_skip_form(child.get('name', ''))
+
+
+def _strip_noise(text, patterns):
+    """从文本中去除噪音词并压缩空格"""
+    for noise in patterns:
+        text = text.replace(noise, '')
+    return ' '.join(text.split()).strip()
+
+
+def count_valid_forms(tree):
+    """统计有效表单数量（排除类型和关键字）"""
+    return sum(1 for mod in tree for child in mod.get('children', []) if _is_valid_form(child))
 
 
 # ============================================================
@@ -227,17 +245,7 @@ def clean_node_name(raw_name: str) -> str:
     """清洗节点名称，去除UI噪音"""
     if not raw_name:
         return ''
-    
-    name = raw_name.strip()
-    
-    # 去除已知的噪音词
-    for noise in UI_NOISE_WORDS:
-        name = name.replace(noise, '')
-    
-    # 去除连续空格
-    name = ' '.join(name.split())
-    
-    # 去除常见的无意义前缀
+    name = _strip_noise(raw_name, UI_NOISE_WORDS)
     _PREFIX_NOISE = [
         f'{NodeType.UPDATE}数据 - ', f'{NodeType.CREATE}数据 - ',
         f'{NodeType.DELETE}数据 - ', '查询数据 - ',
@@ -245,7 +253,6 @@ def clean_node_name(raw_name: str) -> str:
     for prefix in _PREFIX_NOISE:
         if name.startswith(prefix):
             name = name[len(prefix):]
-    
     return name.strip()
 
 
@@ -352,55 +359,38 @@ def clean_config_noise(config: dict) -> dict:
         cleaned_fields = []
         for field in config['fields']:
             if isinstance(field, dict):
-                # 清理 body 字段
-                body = field.get('body', '')
-                if isinstance(body, str):
-                    for noise in CONFIG_NOISE_PATTERNS:
-                        body = body.replace(noise, '').strip()
-                    # 去除连续空格
-                    body = ' '.join(body.split())
-                    field['body'] = body
-
-                # 清理 title 字段
-                title = field.get('title', '')
-                if isinstance(title, str):
-                    for noise in CONFIG_NOISE_PATTERNS:
-                        title = title.replace(noise, '').strip()
-                    field['title'] = title
-                
-                # 只保留非空的字段
+                if isinstance(field.get('body', ''), str):
+                    field['body'] = _strip_noise(field['body'], CONFIG_NOISE_PATTERNS)
+                if isinstance(field.get('title', ''), str):
+                    field['title'] = _strip_noise(field['title'], CONFIG_NOISE_PATTERNS)
                 if field.get('title') or field.get('body'):
                     cleaned_fields.append(field)
         config['fields'] = cleaned_fields
-    
+
     # 清理 mappings（只保留有效的映射）
     if 'mappings' in config and isinstance(config['mappings'], list):
         cleaned_mappings = []
         for mapping in config['mappings']:
             if isinstance(mapping, str):
-                # 跳过纯噪音的映射
                 is_noise_only = any(noise in mapping for noise in CONFIG_NOISE_PATTERNS)
                 if not is_noise_only and len(mapping.strip()) > 3:
                     cleaned_mappings.append(mapping)
             elif mapping:
                 cleaned_mappings.append(mapping)
         config['mappings'] = cleaned_mappings
-    
+
     return config
 
 
 def get_node_type(cls):
     """从 CSS class 判断节点类型"""
-    for k, v in NODE_TYPE_MAP.items():
-        if k in cls:
-            return v
-    return NodeType.UNKNOWN
+    return get_node_type_from_header('', cls)
 
 
 async def connect():
     from playwright.async_api import async_playwright
     playwright = await async_playwright().start()
-    browser = await playwright.chromium.connect_over_cdp("http://localhost:9222")
+    browser = await playwright.chromium.connect_over_cdp(CDP_URL)
     # headless-shell 没有预打开页面，需要手动创建
     if browser.contexts and browser.contexts[0].pages:
         page = browser.contexts[0].pages[0]
@@ -561,7 +551,16 @@ async def extract_all_tree_nodes(page):
             // 递归获取所有 tree-node（包括嵌套的二级目录下的表单）
             function collectNodes(element, parentLevel = -1) {
                 const items = [];
-                const directNodes = element.querySelectorAll(':scope > .tree-node');
+                // 查找直属的 tree-node（:scope > 只看直接子元素）
+                let directNodes = element.querySelectorAll(':scope > .tree-node');
+                // 兼容：如果树容器和 tree-node 之间有 wrapper div，向下穿透一层
+                if (directNodes.length === 0 && parentLevel === -1) {
+                    const wrappers = element.querySelectorAll(':scope > div');
+                    for (const w of wrappers) {
+                        directNodes = w.querySelectorAll(':scope > .tree-node');
+                        if (directNodes.length > 0) break;
+                    }
+                }
                 
                 for (let i = 0; i < directNodes.length; i++) {
                     const node = directNodes[i];
@@ -669,10 +668,17 @@ async def expand_folder_modules(page):
                 // 递归获取所有 tree-node，包括嵌套的
                 function getAllTreeNodes(element) {
                     const nodes = [];
-                    const directNodes = element.querySelectorAll(':scope > .tree-node');
+                    let directNodes = element.querySelectorAll(':scope > .tree-node');
+                    // 兼容 wrapper div 结构
+                    if (directNodes.length === 0) {
+                        const wrappers = element.querySelectorAll(':scope > div');
+                        for (const w of wrappers) {
+                            directNodes = w.querySelectorAll(':scope > .tree-node');
+                            if (directNodes.length > 0) break;
+                        }
+                    }
                     directNodes.forEach(node => {
                         nodes.push(node);
-                        // 递归获取子节点
                         const childNodes = getAllTreeNodes(node);
                         nodes.push(...childNodes);
                     });
@@ -840,47 +846,19 @@ async def build_module_tree(page, app_id):
     print(f"    有效表单数: {total_forms}")
 
     for mod in module_tree:
-        # v8.0.9: 过滤有效表单并检查关键字
-        valid_children = []
-        keyword_skipped_count = 0
-        for c in mod.get('children', []):
-            if c.get('type') in SKIP_ICON_TYPES:
-                continue
-            if should_skip_form(c.get('name', '')):
-                keyword_skipped_count += 1
-                continue
-            valid_children.append(c)
-        skipped = [c for c in mod.get('children', []) if c.get('type') in SKIP_ICON_TYPES]
-        skip_info = f" (跳过{len(skipped)}个类型+{keyword_skipped_count}个关键字)" if (skipped or keyword_skipped_count) else ""
+        valid_children = [c for c in mod.get('children', []) if _is_valid_form(c)]
+        skipped_type = [c for c in mod.get('children', []) if c.get('type') in SKIP_ICON_TYPES]
+        skipped_kw = len(mod.get('children', [])) - len(valid_children) - len(skipped_type)
+        skip_info = f" (跳过{len(skipped_type)}个类型+{skipped_kw}个关键字)" if (skipped_type or skipped_kw) else ""
         print(f"    📁 {mod['name']}: {len(valid_children)}个有效表单{skip_info}")
         for c in mod.get('children', []):
+            mark = "✅" if _is_valid_form(c) else "⏭️"
             ctype = c.get('type', '?')
             cname = c.get('name', '')
-            if ctype in SKIP_ICON_TYPES:
-                mark = "⏭️"
-            elif should_skip_form(cname):
-                mark = "⏭️"
-            else:
-                mark = "✅"
             fid_short = c.get('formId', '')[:8] + '..' if c.get('formId') else ''
             print(f"       {mark} [{ctype:5s}] {cname}  id={fid_short}")
 
     return module_tree
-
-
-def count_valid_forms(tree):
-    """统计有效表单数量（排除类型和关键字）"""
-    count = 0
-    for mod in tree:
-        for child in mod.get('children', []):
-            if child.get('type') in SKIP_ICON_TYPES:
-                continue
-            # v8.0.9: 检查关键字排除
-            form_name = child.get('name', '')
-            if should_skip_form(form_name):
-                continue
-            count += 1
-    return count
 
 
 def select_target_modules(tree, user_input=None):
@@ -891,8 +869,6 @@ def select_target_modules(tree, user_input=None):
     if not tree:
         print("❌ 无可用模块")
         return []
-
-    module_names = [m['name'] for m in tree]
 
     # 方式1: 用户通过参数指定
     if user_input:
@@ -927,8 +903,7 @@ def select_target_modules(tree, user_input=None):
     print(f"{'='*60}")
 
     for i, m in enumerate(tree):
-        valid_count = sum(1 for c in m.get('children', [])
-                          if c.get('type') not in SKIP_ICON_TYPES)
+        valid_count = sum(1 for c in m.get('children', []) if c.get('type') not in SKIP_ICON_TYPES)
         print(f"  {i+1}. {m['name']} ({valid_count}个表单)")
 
     print(f"  0. 全部模块")
@@ -1475,6 +1450,41 @@ async def extract_node_config(page, include_empty=False):
                 drawerScrollHeight: 0
             };
 
+            // 从 .cond-item 元素中提取结构化条件列表，返回 ['字段|||操作符|||值', ...]
+            function _extractConds(container) {
+                const conditions = [];
+                container.querySelectorAll('.cond-item').forEach((cond) => {
+                    const fieldEl = cond.querySelector('.fx-filter-item, .cond-item-left, [class*="filter-item"], .field-name');
+                    let fieldName = fieldEl ? fieldEl.textContent.trim() : '';
+                    const methodEl = cond.querySelector('.method-area, [class*="method"], .operator');
+                    const method = methodEl ? methodEl.textContent.trim() : '';
+                    const valueEl = cond.querySelector('.value-area, .node-and-value, [class*="value"], .cond-item-right');
+                    let value = '';
+                    if (valueEl) {
+                        valueEl.querySelectorAll('.iconfont, .x-icon, [class*="icon"]').forEach(vi => vi.remove());
+                        value = valueEl.textContent.trim();
+                    }
+                    if (fieldName && method) {
+                        let cleanFieldName = fieldName;
+                        let cleanValue = value;
+                        const methodIdx = fieldName.indexOf(method);
+                        if (methodIdx > 0) {
+                            cleanFieldName = fieldName.substring(0, methodIdx).trim();
+                            const afterMethod = fieldName.substring(methodIdx + method.length).trim();
+                            if (afterMethod && (!cleanValue || cleanValue === cleanFieldName))
+                                cleanValue = afterMethod;
+                        } else {
+                            if (value && cleanFieldName.endsWith(value))
+                                cleanFieldName = cleanFieldName.slice(0, -value.length).trim();
+                            if (method && cleanFieldName.endsWith(method))
+                                cleanFieldName = cleanFieldName.slice(0, -method.length).trim();
+                        }
+                        conditions.push(`${cleanFieldName}|||${method}|||${cleanValue}`);
+                    }
+                });
+                return conditions;
+            }
+
             // --- Header ---
             const headerEl = drawer.querySelector('.header, .drawer-header, [class*="header"]');
             result.header = headerEl ? headerEl.textContent?.trim() || '' : '';
@@ -1561,34 +1571,8 @@ async def extract_node_config(page, include_empty=False):
                         const suffix = relationEl.querySelector('.suffix-text')?.textContent?.trim() || '';
                         relationText = `${prefix}${selector}${suffix}`;
                     }
-                    
-                    // 提取每个条件 - 直接在flat-item中查找.cond-item
-                    const condItems = item.querySelectorAll('.cond-item');
-                    const conditions = [];
-                    condItems.forEach((cond, idx) => {
-                        // 提取字段名
-                        const fieldEl = cond.querySelector('.fx-filter-item, .cond-item-left, [class*="filter-item"]');
-                        const fieldName = fieldEl ? fieldEl.textContent.trim() : '';
-                        
-                        // 提取操作符
-                        const methodEl = cond.querySelector('.method-area, [class*="method"]');
-                        const method = methodEl ? methodEl.textContent.trim() : '';
-                        
-                        // 提取值
-                        const valueEl = cond.querySelector('.value-area, .node-and-value, [class*="value"]');
-                        let value = '';
-                        if (valueEl) {
-                            // 排除图标
-                            const valIcons = valueEl.querySelectorAll('.iconfont, .x-icon, [class*="icon"]');
-                            valIcons.forEach(vi => vi.remove());
-                            value = valueEl.textContent.trim();
-                        }
-                        
-                        if (fieldName && method) {
-                            // v8.0.9: 使用特殊分隔符 ||| 分隔 A X B 三部分
-                            conditions.push(`${fieldName}|||${method}|||${value}`);
-                        }
-                    });
+
+                    const conditions = _extractConds(item);
                     
                     // 构建查询条件body
                     if (relationText && conditions.length > 0) {
@@ -1621,38 +1605,7 @@ async def extract_node_config(page, include_empty=False):
                 
                 // v8.0.8: 特殊处理修改/删除节点的筛选条件
                 if (title.includes('筛选') || title.includes('删除条件')) {
-                    const condItems = item.querySelectorAll('.cond-item');
-                    const conditions = [];
-                    condItems.forEach((cond) => {
-                        const fieldEl = cond.querySelector('.fx-filter-item, .cond-item-left, [class*="filter-item"]');
-                        let fieldName = fieldEl ? fieldEl.textContent.trim() : '';
-
-                        const methodEl = cond.querySelector('.method-area, [class*="method"]');
-                        const method = methodEl ? methodEl.textContent.trim() : '';
-
-                        const valueEl = cond.querySelector('.value-area, .node-and-value, [class*="value"]');
-                        let value = '';
-                        if (valueEl) {
-                            const valIcons = valueEl.querySelectorAll('.iconfont, .x-icon, [class*="icon"]');
-                            valIcons.forEach(vi => vi.remove());
-                            value = valueEl.textContent.trim();
-                        }
-
-                        if (fieldName && method) {
-                            // v8.0.9: 如果fieldName包含method和value，先清理
-                            // 例如 "生产计划等于触发数据—数据ID" 需要清理成 "生产计划"
-                            let cleanFieldName = fieldName;
-                            if (value && cleanFieldName.endsWith(value)) {
-                                cleanFieldName = cleanFieldName.slice(0, -value.length).trim();
-                            }
-                            if (method && cleanFieldName.endsWith(method)) {
-                                cleanFieldName = cleanFieldName.slice(0, -method.length).trim();
-                            }
-                            // v8.0.9: 使用特殊分隔符 ||| 分隔 A X B 三部分
-                            conditions.push(`${cleanFieldName}|||${method}|||${value}`);
-                        }
-                    });
-
+                    const conditions = _extractConds(item);
                     if (conditions.length > 0) {
                         body = conditions.join('；');
                     }
@@ -1660,86 +1613,22 @@ async def extract_node_config(page, include_empty=False):
 
                 // v8.0.9: 特殊处理分支条件的条件设置（类似查询条件）
                 if (title.includes('条件设置')) {
-                    // 提取分支执行规则（满足所有/任一条件执行本分支）
-                    // 从截图看DOM结构是 div.fx-filter-relation > 满足 所有 条件，执行本分支
                     let ruleText = '';
-                    
-                    // 方法1: 优先从 .fx-filter-relation 元素提取（最准确）
+
                     const relationEl = item.querySelector('.fx-filter-relation');
                     if (relationEl) {
                         ruleText = relationEl.textContent?.trim() || '';
                     }
-                    
-                    // 方法2: 从整个item文本中用正则提取
                     if (!ruleText) {
-                        const itemText = item.textContent || '';
-                        const ruleMatch = itemText.match(/满足\s*(所有|任一)\s*条件[，,]?\s*执行本分支/);
-                        if (ruleMatch) {
-                            ruleText = ruleMatch[0];
-                        }
+                        const ruleMatch = (item.textContent || '').match(/满足\s*(所有|任一)\s*条件[，,]?\s*执行本分支/);
+                        if (ruleMatch) ruleText = ruleMatch[0];
                     }
-                    
-                    // 方法3: 尝试其他选择器
                     if (!ruleText) {
                         const ruleEl2 = item.querySelector('.branch-rule, [class*="branch-rule"], .relation-text, [class*="relation"], .selector-text');
-                        if (ruleEl2) {
-                            ruleText = ruleEl2.textContent?.trim() || '';
-                        }
+                        if (ruleEl2) ruleText = ruleEl2.textContent?.trim() || '';
                     }
 
-                    // 提取每个条件 - 直接在flat-item中查找.cond-item
-                    const condItems = item.querySelectorAll('.cond-item');
-                    const conditions = [];
-                    condItems.forEach((cond) => {
-                        // 提取字段名 - 使用更精确的选择器
-                        const fieldEl = cond.querySelector('.fx-filter-item, .cond-item-left, [class*="filter-item"], .field-name');
-                        let fieldName = fieldEl ? fieldEl.textContent.trim() : '';
-
-                        // 提取操作符
-                        const methodEl = cond.querySelector('.method-area, [class*="method"], .operator');
-                        const method = methodEl ? methodEl.textContent.trim() : '';
-
-                        // 提取值 - 使用更精确的选择器
-                        const valueEl = cond.querySelector('.value-area, .node-and-value, [class*="value"], .cond-item-right');
-                        let value = '';
-                        if (valueEl) {
-                            const valIcons = valueEl.querySelectorAll('.iconfont, .x-icon, [class*="icon"]');
-                            valIcons.forEach(vi => vi.remove());
-                            value = valueEl.textContent.trim();
-                        }
-
-                        if (fieldName && method) {
-                            // v8.0.9: 如果fieldName包含method和value，先清理
-                            // 例如 "触发数据—生产计划状态等于任意一个待执行物料分析" 
-                            // 应该清理成 "触发数据—生产计划状态"，value应该是"待执行物料分析"
-                            let cleanFieldName = fieldName;
-                            let cleanValue = value;
-                            
-                            // 检查fieldName是否包含method
-                            const methodIdx = fieldName.indexOf(method);
-                            if (methodIdx > 0) {
-                                // fieldName包含method，说明fieldName是完整的"字段名+操作符+值"
-                                // 从fieldName中解析
-                                cleanFieldName = fieldName.substring(0, methodIdx).trim();
-                                const afterMethod = fieldName.substring(methodIdx + method.length).trim();
-                                // afterMethod就是值
-                                if (afterMethod && (!cleanValue || cleanValue === cleanFieldName)) {
-                                    cleanValue = afterMethod;
-                                }
-                            } else {
-                                // fieldName不包含method，使用原来的清理逻辑
-                                if (value && cleanFieldName.endsWith(value)) {
-                                    cleanFieldName = cleanFieldName.slice(0, -value.length).trim();
-                                }
-                                if (method && cleanFieldName.endsWith(method)) {
-                                    cleanFieldName = cleanFieldName.slice(0, -method.length).trim();
-                                }
-                            }
-                            
-                            // v8.0.9: 使用特殊分隔符 ||| 分隔 A X B 三部分
-                            conditions.push(`${cleanFieldName}|||${method}|||${cleanValue}`);
-                        }
-                    });
+                    const conditions = _extractConds(item);
 
                     // 构建分支条件body: 规则前缀 + 分隔符 + 条件列表
                     if (conditions.length > 0) {
@@ -2820,6 +2709,102 @@ def generate_module_summary(module_name, form_summaries, output_dir, docs_dir=No
 # 主流程
 # ============================================================
 
+_JS_FIND_GROUP_NODE = """
+(targetName) => {
+    const tree = document.querySelector('.fx-app-menu-tree.fx-indicator-tree');
+    if (!tree) return {error: 'no tree'};
+    function findGroupNode(element, name) {
+        let nodes = element.querySelectorAll(':scope > .tree-node');
+        if (nodes.length === 0) {
+            for (const w of element.querySelectorAll(':scope > div')) {
+                nodes = w.querySelectorAll(':scope > .tree-node');
+                if (nodes.length > 0) break;
+            }
+        }
+        for (let i = 0; i < nodes.length; i++) {
+            const n = nodes[i];
+            const nameEl = n.querySelector('.name-text');
+            const nameText = nameEl ? nameEl.textContent?.trim() : '';
+            const svgIcon = n.querySelector('svg.x-biz-entry-icon');
+            const isGroup = svgIcon && (svgIcon.getAttribute('class') || '').includes('group');
+            if (nameText === name && isGroup) {
+                const hasChildren = n.querySelector('.tree-children') !== null;
+                if (!hasChildren) {
+                    const wrapper = n.querySelector('.node-content-wrapper');
+                    if (wrapper) { wrapper.click(); return {expanded: true, name: name}; }
+                }
+                return {alreadyExpanded: true, name: name};
+            }
+            const childContainer = n.querySelector('.tree-children');
+            if (childContainer) {
+                const r = findGroupNode(childContainer, name);
+                if (r && (r.expanded || r.alreadyExpanded)) return r;
+            }
+        }
+        return null;
+    }
+    return findGroupNode(tree, targetName);
+}
+"""
+
+
+async def _expand_module_children(page, module, module_name):
+    """展开未加载子项的模块，填充 module['children']"""
+    print(f"  ⚠️ 模块 {module_name} 在初始提取时无子项，尝试展开...")
+
+    await navigate_to_app_home(page, APP_ID)
+    await page.wait_for_timeout(1500)
+
+    expanded = await page.evaluate(_JS_FIND_GROUP_NODE, module_name)
+    print(f"  展开结果: {json.dumps(expanded, ensure_ascii=False)}")
+
+    if not expanded or not expanded.get('expanded'):
+        return
+
+    await page.wait_for_timeout(2000)
+
+    still_home = await page.evaluate(
+        "() => !!document.querySelector('.fx-app-menu-tree.fx-indicator-tree')"
+    )
+    if not still_home:
+        print("  ⚠️ 展开后离开主页，尝试返回...")
+        await navigate_to_app_home(page, APP_ID)
+        await page.wait_for_timeout(2000)
+        return
+
+    # 一级展开后获取子项
+    first_modules = build_module_structure((await extract_all_tree_nodes(page)).get('items', []))
+    for m in first_modules:
+        if m['name'] == module_name and m.get('children'):
+            module['children'] = m['children']
+            print(f"  ✓ 一级展开后发现 {len(m['children'])} 个子项")
+            break
+
+    # 展开二级目录
+    sub_folders = [c for c in module.get('children', []) if c.get('type') == 'group']
+    if sub_folders:
+        print(f"  📂 发现 {len(sub_folders)} 个二级目录，逐个展开...")
+        for folder in sub_folders:
+            folder_name = folder.get('name', '')
+            print(f"     → 展开: {folder_name}")
+            result = await page.evaluate(_JS_FIND_GROUP_NODE, folder_name)
+            if result and not result.get('error'):
+                await page.wait_for_timeout(800)
+                status = "已展开" if result.get('expanded') else "已存在"
+                print(f"       ✓ {status}: {folder_name}")
+            else:
+                print(f"       ⚠️ 未找到或失败: {folder_name}")
+        await page.wait_for_timeout(1000)
+
+    # 最终获取所有节点
+    final_modules = build_module_structure((await extract_all_tree_nodes(page)).get('items', []))
+    for m in final_modules:
+        if m['name'] == module_name and m.get('children'):
+            module['children'] = m['children']
+            print(f"\n  ✓ 最终共发现 {len(m['children'])} 个子项")
+            break
+
+
 async def run_module(page, module, output_root=None):
     """
     执行单个模块的完整遍历（v8.0 新目录结构）。
@@ -2867,176 +2852,16 @@ async def run_module(page, module, output_root=None):
     print(f"  输出: {module_dir}")
     print(f"{'█'*60}")
 
-    # ====== 关键：展开目标模块获取完整子表单列表 ======
-    # 如果 Phase A 时该模块没有子项（文件夹未展开），需要：
-    # 1. 回到应用主页
-    # 2. 点击该模块的 L0 group 节点展开它
-    # 3. 重新提取树节点，获取展开后的子表单
-    
-    if not module.get('children') or len(module.get('children', [])) == 0:
-        print(f"  ⚠️ 模块 {module_name} 在初始提取时无子项，尝试展开...")
-        
-        # 回到主页（如果不在）
-        await navigate_to_app_home(page, APP_ID)
-        await page.wait_for_timeout(1500)
-        
-        # 找到并点击目标模块的 L0 节点
-        expanded = await page.evaluate("""
-            (targetName) => {
-                const tree = document.querySelector('.fx-app-menu-tree.fx-indicator-tree');
-                if (!tree) return {error: 'no tree'};
-                
-                const allNodes = tree.querySelectorAll(':scope > .tree-node');
-                
-                for (let i = 0; i < allNodes.length; i++) {
-                    const n = allNodes[i];
-                    const nameEl = n.querySelector('.name-text');
-                    const name = nameEl ? nameEl.textContent?.trim() : '';
-                    
-                    // 检查是否是 L0 的 group 类型且名称匹配
-                    if (name === targetName) {
-                        const svgIcon = n.querySelector('svg.x-biz-entry-icon');
-                        let isGroup = false;
-                        if (svgIcon) {
-                            isGroup = (svgIcon.getAttribute('class') || '').includes('group');
-                        }
-                        
-                        if (isGroup) {
-                            const contentWrapper = n.querySelector('.node-content-wrapper');
-                            if (contentWrapper) {
-                                contentWrapper.click();
-                                return {clicked: true, index: i, name: name};
-                            }
-                        }
-                    }
-                }
-                
-                return {clicked: false, error: 'module node not found: ' + targetName};
-            }
-        """, module_name)
-        
-        print(f"  展开结果: {json.dumps(expanded, ensure_ascii=False)}")
-        
-        if expanded.get('clicked'):
-            await page.wait_for_timeout(2000)
-            
-            # 检查是否还在主页（点击可能触发了页面跳转）
-            still_home = await page.evaluate("""
-                () => !!document.querySelector('.fx-app-menu-tree.fx-indicator-tree')
-            """)
-            
-            if still_home:
-                # Step 1: 先获取目标模块下的子项（可能包含二级目录）
-                first_raw = await extract_all_tree_nodes(page)
-                first_items = first_raw.get('items', [])
-                first_modules = build_module_structure(first_items)
-                
-                # 更新当前模块的 children
-                for m in first_modules:
-                    if m['name'] == module_name and m.get('children'):
-                        module['children'] = m['children']
-                        print(f"  ✓ 一级展开后发现 {len(m['children'])} 个子项")
-                        break
-                
-                # Step 2: 找出目标模块下的二级目录(group类型)并逐个展开
-                sub_folders = [c for c in module.get('children', []) if c.get('type') == 'group']
-                
-                if sub_folders:
-                    print(f"  📂 发现 {len(sub_folders)} 个二级目录，逐个展开...")
-                    
-                    for folder in sub_folders:
-                        folder_name = folder.get('name', '')
-                        print(f"     → 展开: {folder_name}")
-                        
-                        # 只展开目标模块下的这个特定二级目录
-                        expand_result = await page.evaluate("""
-                            (targetName) => {
-                                const tree = document.querySelector('.fx-app-menu-tree.fx-indicator-tree');
-                                if (!tree) return {error: 'no tree'};
-                                
-                                // 递归查找目标名称的 group 节点
-                                function findGroupNode(element, name) {
-                                    const nodes = element.querySelectorAll(':scope > .tree-node');
-                                    for (let i = 0; i < nodes.length; i++) {
-                                        const n = nodes[i];
-                                        const nameEl = n.querySelector('.name-text');
-                                        const nameText = nameEl ? nameEl.textContent?.trim() : '';
-                                        
-                                        const svgIcon = n.querySelector('svg.x-biz-entry-icon');
-                                        let isGroup = false;
-                                        if (svgIcon) {
-                                            isGroup = (svgIcon.getAttribute('class') || '').includes('group');
-                                        }
-                                        
-                                        // 名称匹配且是group类型
-                                        if (nameText === name && isGroup) {
-                                            // 检查是否已展开
-                                            const hasChildren = n.querySelector('.tree-children') !== null;
-                                            if (!hasChildren) {
-                                                const contentWrapper = n.querySelector('.node-content-wrapper');
-                                                if (contentWrapper) {
-                                                    contentWrapper.click();
-                                                    return {expanded: true, name: name};
-                                                }
-                                            }
-                                            return {alreadyExpanded: true, name: name};
-                                        }
-                                        
-                                        // 递归查找子节点
-                                        const childContainer = n.querySelector('.tree-children');
-                                        if (childContainer) {
-                                            const result = findGroupNode(childContainer, name);
-                                            if (result && (result.expanded || result.alreadyExpanded)) {
-                                                return result;
-                                            }
-                                        }
-                                    }
-                                    return null;
-                                }
-                                
-                                return findGroupNode(tree, targetName);
-                            }
-                        """, folder_name)
-                        
-                        if expand_result and not expand_result.get('error'):
-                            await page.wait_for_timeout(800)
-                            status = "已展开" if expand_result.get('expanded') else "已存在"
-                            print(f"       ✓ {status}: {folder_name}")
-                        else:
-                            print(f"       ⚠️ 未找到或失败: {folder_name}")
-                    
-                    # 等待所有子目录加载完成
-                    await page.wait_for_timeout(1000)
-                
-                # Step 3: 最终获取所有节点（包含二级目录下的表单）
-                final_raw = await extract_all_tree_nodes(page)
-                final_items = final_raw.get('items', [])
-                final_modules = build_module_structure(final_items)
-                
-                # 更新最终结果
-                for m in final_modules:
-                    if m['name'] == module_name and m.get('children'):
-                        module['children'] = m['children']
-                        print(f"\n  ✓ 最终共发现 {len(m['children'])} 个子项")
-                        break
-            else:
-                print("  ⚠️ 展开后离开主页，尝试返回...")
-                await navigate_to_app_home(page, APP_ID)
-                await page.wait_for_timeout(2000)
-    
-    # 过滤有效的表单（排除文件夹和仪表盘）
-    valid_forms = [c for c in module.get('children', []) if c.get('type') not in SKIP_ICON_TYPES]
-    skipped = [c for c in module.get('children', []) if c.get('type') in SKIP_ICON_TYPES]
+    # 展开未加载子项的模块
+    if not module.get('children'):
+        await _expand_module_children(page, module, module_name)
 
-    # v8.0.9: 根据表单名称关键字排除
-    keyword_skipped = []
-    forms_to_process = []
-    for vf in valid_forms:
-        form_name = vf.get('name', '')
-        if should_skip_form(form_name):
-            keyword_skipped.append((vf, _skip_keyword(form_name)))
-        else:
-            forms_to_process.append(vf)
+    # 过滤有效表单
+    forms_to_process = [c for c in module.get('children', []) if _is_valid_form(c)]
+    skipped = [c for c in module.get('children', []) if c.get('type') in SKIP_ICON_TYPES]
+    keyword_skipped = [(c, _skip_keyword(c.get('name', '')))
+                       for c in module.get('children', [])
+                       if c.get('type') not in SKIP_ICON_TYPES and should_skip_form(c.get('name', ''))]
 
     # 分类统计
     folders = [c for c in skipped if c.get('type') == 'group']
@@ -3129,8 +2954,9 @@ async def main():
             user_module_input = arg
 
     if not APP_ID:
-        # 默认测试应用
         APP_ID = "69db868cc68a628a7d0f207f"
+    if not OUTPUT_DIR:
+        OUTPUT_DIR = os.path.join(os.getcwd(), "output")
 
     print(f"  应用ID: {APP_ID}")
     print(f"  输出目录: {OUTPUT_DIR}")
